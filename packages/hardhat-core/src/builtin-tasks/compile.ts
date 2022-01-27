@@ -1,3 +1,4 @@
+import os from "os";
 import chalk from "chalk";
 import { exec } from "child_process";
 import debug from "debug";
@@ -391,25 +392,28 @@ subtask(TASK_COMPILE_SOLIDITY_COMPILE_JOBS)
 
       log(`Compiling ${sortedCompilationJobs.length} jobs`);
 
-      const artifactsEmittedPerJob: ArtifactsEmittedPerJob = [];
-      for (let i = 0; i < sortedCompilationJobs.length; i++) {
-        const compilationJob = sortedCompilationJobs[i];
+      const results = await chunkedPromiseAll<{
+        compilationJob: CompilationJob;
+        artifactsEmittedPerFile: ArtifactsEmittedPerFile;
+      }>(
+        sortedCompilationJobs.map((j, i) => {
+          return () =>
+            run(TASK_COMPILE_SOLIDITY_COMPILE_JOB, {
+              compilationJob: j,
+              compilationJobs: sortedCompilationJobs,
+              compilationJobIndex: i,
+              quiet,
+            });
+        }),
+        os.cpus().length
+      );
 
-        const { artifactsEmittedPerFile } = await run(
-          TASK_COMPILE_SOLIDITY_COMPILE_JOB,
-          {
-            compilationJob,
-            compilationJobs: sortedCompilationJobs,
-            compilationJobIndex: i,
-            quiet,
-          }
-        );
-
-        artifactsEmittedPerJob.push({
+      const artifactsEmittedPerJob: ArtifactsEmittedPerJob = results.map(
+        ({ compilationJob, artifactsEmittedPerFile }) => ({
           compilationJob,
           artifactsEmittedPerFile,
-        });
-      }
+        })
+      );
 
       return { artifactsEmittedPerJob };
     }
@@ -735,7 +739,7 @@ subtask(TASK_COMPILE_SOLIDITY_LOG_COMPILATION_ERRORS)
     if (hasConsoleErrors) {
       console.error(
         chalk.red(
-          `The console.log call you made isn’t supported. See https://hardhat.org/console-log for the list of supported methods.`
+          `The console.log call you made isn't supported. See https://hardhat.org/console-log for the list of supported methods.`
         )
       );
       console.log();
@@ -1500,4 +1504,37 @@ function getFormattedInternalCompilerErrorMessage(error: {
   // We trim any final `:`, as we found some at the end of the error messages,
   // and then trim just in case a blank space was left
   return `${error.type}: ${error.message}`.replace(/[:\s]*$/g, "").trim();
+}
+
+/**
+ * This function accepts an array of functions that each return a promise and
+ * runs them in groups of `chunkSize` length at a time, replacing finished tasks
+ * with those waiting in queue and returning an aggregation of the resulting data.
+ */
+async function chunkedPromiseAll<T>(
+  promises: Array<() => Promise<T>>,
+  chunkSize: number = 4
+): Promise<T[]> {
+  const queue = [...promises];
+  const running = queue.splice(0, chunkSize);
+
+  const results = [];
+  while (running.length > 0) {
+    const withIndexes = running.map((p, i) =>
+      p().then((r) => [r, i] as [T, number])
+    );
+
+    const [result, index] = await Promise.race(withIndexes);
+
+    results.push(result);
+
+    running.splice(index, 1);
+
+    const nextItem = queue.shift();
+    if (nextItem !== undefined) {
+      running.push(nextItem);
+    }
+  }
+
+  return results;
 }
