@@ -4,6 +4,7 @@ import fsExtra from "fs-extra";
 import os from "os";
 import path from "path";
 
+import { Mutex } from "../../vendor/await-semaphore";
 import { HardhatError } from "../../core/errors";
 import { ERRORS } from "../../core/errors-list";
 
@@ -61,6 +62,7 @@ export class CompilerDownloader {
     destinationFile: string
   ) => Promise<void>;
   private readonly _forceSolcJs: boolean;
+  private readonly _mutex = new Mutex();
 
   constructor(
     private readonly _compilersDir: string,
@@ -192,6 +194,8 @@ export class CompilerDownloader {
   }
 
   public async downloadCompilersList(platform: CompilerPlatform) {
+    const release = await this._mutex.acquire();
+
     try {
       await this._download(
         getCompilerListURL(platform),
@@ -203,6 +207,8 @@ export class CompilerDownloader {
         {},
         error
       );
+    } finally {
+      release();
     }
   }
 
@@ -210,16 +216,17 @@ export class CompilerDownloader {
     compilerBuild: CompilerBuild,
     downloadedFilePath: string
   ) {
-    log(
-      `Downloading compiler version ${compilerBuild.version} platform ${compilerBuild.platform}`
-    );
-
-    const compilerUrl = getCompilerURL(
-      compilerBuild.platform,
-      compilerBuild.path
-    );
+    const release = await this._mutex.acquire();
 
     try {
+      log(
+        `Downloading compiler version ${compilerBuild.version} platform ${compilerBuild.platform}`
+      );
+
+      const compilerUrl = getCompilerURL(
+        compilerBuild.platform,
+        compilerBuild.path
+      );
       await this._download(compilerUrl, downloadedFilePath);
     } catch (error) {
       throw new HardhatError(
@@ -229,6 +236,8 @@ export class CompilerDownloader {
         },
         error as Error
       );
+    } finally {
+      release();
     }
   }
 

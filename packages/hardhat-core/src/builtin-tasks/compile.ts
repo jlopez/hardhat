@@ -90,6 +90,18 @@ type ArtifactsEmittedPerJob = Array<{
   artifactsEmittedPerFile: ArtifactsEmittedPerFile;
 }>;
 
+interface CompilationSuccess {
+  artifactsEmittedPerFile: ArtifactsEmittedPerFile;
+  compilationJob: taskTypes.CompilationJob;
+  input: CompilerInput;
+  output: CompilerOutput;
+  solcBuild: any;
+}
+
+interface CompilationFailure {
+  errors: any;
+}
+
 function isConsoleLogError(error: any): boolean {
   return (
     error.type === "TypeError" &&
@@ -392,10 +404,9 @@ subtask(TASK_COMPILE_SOLIDITY_COMPILE_JOBS)
 
       log(`Compiling ${sortedCompilationJobs.length} jobs`);
 
-      const results = await chunkedPromiseAll<{
-        compilationJob: CompilationJob;
-        artifactsEmittedPerFile: ArtifactsEmittedPerFile;
-      }>(
+      const results = await chunkedPromiseAll<
+        CompilationSuccess | CompilationFailure
+      >(
         sortedCompilationJobs.map((j, i) => {
           return () =>
             run(TASK_COMPILE_SOLIDITY_COMPILE_JOB, {
@@ -408,12 +419,24 @@ subtask(TASK_COMPILE_SOLIDITY_COMPILE_JOBS)
         os.cpus().length
       );
 
-      const artifactsEmittedPerJob: ArtifactsEmittedPerJob = results.map(
-        ({ compilationJob, artifactsEmittedPerFile }) => ({
-          compilationJob,
-          artifactsEmittedPerFile,
-        })
-      );
+      const { compilationSuccesses, compilationFailures } =
+        filterCompilationResults(results);
+
+      if (compilationFailures.length > 0) {
+        for (const { errors } of compilationFailures) {
+          console.log(errors);
+        }
+
+        throw new HardhatError(ERRORS.BUILTIN_TASKS.COMPILE_FAILURE);
+      }
+
+      const artifactsEmittedPerJob: ArtifactsEmittedPerJob =
+        compilationSuccesses.map(
+          ({ compilationJob, artifactsEmittedPerFile }) => ({
+            compilationJob,
+            artifactsEmittedPerFile,
+          })
+        );
 
       return { artifactsEmittedPerJob };
     }
@@ -874,45 +897,11 @@ subtask(TASK_COMPILE_SOLIDITY_LOG_RUN_COMPILER_START)
   .addParam("compilationJobIndex", undefined, undefined, types.int)
   .addParam("quiet", undefined, undefined, types.boolean)
   .setAction(
-    async ({
-      compilationJobs,
-      compilationJobIndex,
-    }: {
+    async ({}: {
       compilationJob: CompilationJob;
       compilationJobs: CompilationJob[];
       compilationJobIndex: number;
-    }) => {
-      const solcVersion =
-        compilationJobs[compilationJobIndex].getSolcConfig().version;
-
-      // we log if this is the first job, or if the previous job has a
-      // different solc version
-      const shouldLog =
-        compilationJobIndex === 0 ||
-        compilationJobs[compilationJobIndex - 1].getSolcConfig().version !==
-          solcVersion;
-
-      if (!shouldLog) {
-        return;
-      }
-
-      // count how many files emit artifacts for this version
-      let count = 0;
-      for (let i = compilationJobIndex; i < compilationJobs.length; i++) {
-        const job = compilationJobs[i];
-        if (job.getSolcConfig().version !== solcVersion) {
-          break;
-        }
-
-        count += job
-          .getResolvedFiles()
-          .filter((file) => job.emitsArtifacts(file)).length;
-      }
-
-      console.log(
-        `Compiling ${count} ${pluralize(count, "file")} with ${solcVersion}`
-      );
-    }
+    }) => {}
   );
 
 /**
@@ -960,13 +949,7 @@ subtask(TASK_COMPILE_SOLIDITY_COMPILE_JOB)
         emitsArtifacts: boolean;
       },
       { run }
-    ): Promise<{
-      artifactsEmittedPerFile: ArtifactsEmittedPerFile;
-      compilationJob: taskTypes.CompilationJob;
-      input: CompilerInput;
-      output: CompilerOutput;
-      solcBuild: any;
-    }> => {
+    ): Promise<CompilationSuccess | CompilationFailure> => {
       log(
         `Compiling job with version '${compilationJob.getSolcConfig().version}'`
       );
@@ -986,7 +969,11 @@ subtask(TASK_COMPILE_SOLIDITY_COMPILE_JOB)
         compilationJobIndex,
       });
 
-      await run(TASK_COMPILE_SOLIDITY_CHECK_ERRORS, { output, quiet });
+      if (hasCompilationErrors(output)) {
+        return {
+          errors: output.errors,
+        };
+      }
 
       let artifactsEmittedPerFile = [];
       if (emitsArtifacts) {
@@ -1261,8 +1248,12 @@ subtask(TASK_COMPILE_SOLIDITY_LOG_COMPILATION_RESULT)
   .addParam("quiet", undefined, undefined, types.boolean)
   .setAction(
     async ({ compilationJobs }: { compilationJobs: CompilationJob[] }) => {
-      if (compilationJobs.length > 0) {
-        console.log("Solidity compilation finished successfully");
+      const count = compilationJobs.length;
+
+      if (count > 0) {
+        console.log(
+          `Compiled ${count} Solidity ${pluralize(count, "file")} successfully`
+        );
       }
     }
   );
@@ -1537,4 +1528,26 @@ async function chunkedPromiseAll<T>(
   }
 
   return results;
+}
+
+/**
+ * This function really just exists to aggregate compilation errors
+ * in a type-safe way.
+ */
+function filterCompilationResults(
+  input: Array<CompilationSuccess | CompilationFailure>
+): {
+  compilationSuccesses: CompilationSuccess[];
+  compilationFailures: CompilationFailure[];
+} {
+  const compilationSuccesses: CompilationSuccess[] = [];
+  const compilationFailures: CompilationFailure[] = [];
+  for (const value of input) {
+    if ("errors" in value) {
+      compilationFailures.push(value);
+    } else {
+      compilationSuccesses.push(value);
+    }
+  }
+  return { compilationSuccesses, compilationFailures };
 }
