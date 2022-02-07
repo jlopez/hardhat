@@ -53,8 +53,11 @@ async function downloadFile(
 
 type CompilerDownloaderOptions = Partial<{
   download: (url: string, destinationFile: string) => Promise<void>;
+  downloadLogger: () => Promise<void>;
   forceSolcJs: boolean;
 }>;
+
+const mutex = new Mutex();
 
 export class CompilerDownloader {
   private readonly _download: (
@@ -62,7 +65,7 @@ export class CompilerDownloader {
     destinationFile: string
   ) => Promise<void>;
   private readonly _forceSolcJs: boolean;
-  private readonly _mutex = new Mutex();
+  private readonly _downloadLogger: () => Promise<void>;
 
   constructor(
     private readonly _compilersDir: string,
@@ -70,6 +73,7 @@ export class CompilerDownloader {
   ) {
     this._download = options.download ?? downloadFile;
     this._forceSolcJs = options.forceSolcJs ?? false;
+    this._downloadLogger = options.downloadLogger ?? (async () => {});
   }
 
   public async isCompilerDownloaded(version: string): Promise<boolean> {
@@ -194,7 +198,12 @@ export class CompilerDownloader {
   }
 
   public async downloadCompilersList(platform: CompilerPlatform) {
-    const release = await this._mutex.acquire();
+    const release = await mutex.acquire();
+
+    if (await this.compilersListExists(platform)) {
+      release();
+      return;
+    }
 
     try {
       await this._download(
@@ -216,7 +225,12 @@ export class CompilerDownloader {
     compilerBuild: CompilerBuild,
     downloadedFilePath: string
   ) {
-    const release = await this._mutex.acquire();
+    const release = await mutex.acquire();
+
+    if (await this.isCompilerDownloaded(compilerBuild.version)) {
+      release();
+      return;
+    }
 
     try {
       log(
@@ -227,6 +241,7 @@ export class CompilerDownloader {
         compilerBuild.platform,
         compilerBuild.path
       );
+      await this._downloadLogger();
       await this._download(compilerUrl, downloadedFilePath);
     } catch (error) {
       throw new HardhatError(

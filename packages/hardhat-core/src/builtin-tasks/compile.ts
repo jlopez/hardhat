@@ -514,7 +514,19 @@ subtask(TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD)
       { run }
     ): Promise<SolcBuild> => {
       const compilersCache = await getCompilersDir();
-      const downloader = new CompilerDownloader(compilersCache);
+      const downloadLogger = () =>
+        run(TASK_COMPILE_SOLIDITY_LOG_DOWNLOAD_COMPILER_START, {
+          solcVersion,
+          isCompilerDownloaded,
+          quiet,
+        });
+
+      const downloader: CompilerDownloader = new CompilerDownloader(
+        compilersCache,
+        {
+          downloadLogger,
+        }
+      );
 
       const isCompilerDownloaded = await downloader.isCompilerDownloaded(
         solcVersion
@@ -522,12 +534,6 @@ subtask(TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD)
 
       const { longVersion, platform: desiredPlatform } =
         await downloader.getCompilerBuild(solcVersion);
-
-      await run(TASK_COMPILE_SOLIDITY_LOG_DOWNLOAD_COMPILER_START, {
-        solcVersion,
-        isCompilerDownloaded,
-        quiet,
-      });
 
       let compilerPath: string | undefined;
       let platform: CompilerPlatform | undefined;
